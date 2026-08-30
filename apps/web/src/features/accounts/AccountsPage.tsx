@@ -70,6 +70,7 @@ import { useHeaderSnapshotsLoader } from '@/features/monitoring/hooks/useHeaderS
 import { PaginationControls } from '@/features/monitoring/components/MonitoringShared';
 import { CredentialHealthInspectionWorkspace } from '@/features/monitoring/components/CredentialHealthInspectionWorkspace';
 import { AuthJsonPasteModal } from '@/features/authFiles/components/AuthJsonPasteModal';
+import { CodexPatImportModal } from '@/features/authFiles/components/CodexPatImportModal';
 import { OAuthExcludedCard } from '@/features/authFiles/components/OAuthExcludedCard';
 import {
   OAuthExcludedEditorModal,
@@ -286,6 +287,12 @@ import {
 import type { AuthFileItem, CodexQuotaState, XaiQuotaState } from '@/types';
 import type { CodexQuotaData } from '@/utils/quota';
 import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
+import {
+  buildCodexPatAuthJson,
+  CodexPatImportError,
+  getCodexPatAuthFileName,
+  validateCodexPersonalAccessToken,
+} from '@/features/authFiles/codexPat';
 import {
   maskQuotaAccountText,
   type QuotaAccountDisplayMode,
@@ -1109,6 +1116,9 @@ export function AccountsPage() {
   );
   const oauthEditorConnectionFingerprintRef = useRef(connectionFingerprint);
   const [authJsonPasteOpen, setAuthJsonPasteOpen] = useState(false);
+  const [codexPatImportOpen, setCodexPatImportOpen] = useState(false);
+  const [codexPatImporting, setCodexPatImporting] = useState(false);
+  const codexPatImportingRef = useRef(false);
   const [codexReauthTarget, setCodexReauthTarget] = useState<CodexReauthTarget | null>(null);
   const codexReauthBaselineRef = useRef<AccountDirectReauthBaseline | null>(null);
   const inspectionCodexReauthBaselineRef = useRef<{
@@ -1326,6 +1336,7 @@ export function AccountsPage() {
     setOauthExcludedEditorProvider(null);
     setOauthModelAliasEditorProvider(null);
     setAuthJsonPasteOpen(false);
+    setCodexPatImportOpen(false);
     setCodexReauthTarget(null);
     codexReauthBaselineRef.current = null;
     inspectionCodexReauthBaselineRef.current = null;
@@ -1988,6 +1999,50 @@ export function AccountsPage() {
       setAuthJsonPasteOpen(false);
     },
     [connectionFingerprint, savePastedAuthJson]
+  );
+
+  const handleImportCodexPat = useCallback(
+    async (rawToken: string) => {
+      if (codexPatImportingRef.current) return;
+
+      const importConnectionFingerprint = connectionFingerprint;
+      codexPatImportingRef.current = true;
+      setCodexPatImporting(true);
+      try {
+        let identity;
+        try {
+          identity = await validateCodexPersonalAccessToken(rawToken, authFilesRequestScope);
+        } catch (importError) {
+          if (importError instanceof CodexPatImportError) {
+            throw new Error(t(`auth_files.codex_pat_error_${importError.code}`));
+          }
+          throw new Error(t('auth_files.codex_pat_error_validation_failed'));
+        }
+
+        if (oauthEditorConnectionFingerprintRef.current !== importConnectionFingerprint) {
+          throw new Error(t('auth_files.codex_pat_connection_changed'));
+        }
+
+        const fileName = getCodexPatAuthFileName(identity);
+        const duplicate = files.some((file) => {
+          const accountId = [file.account_id, file.chatgpt_account_id].find(
+            (value): value is string => typeof value === 'string' && Boolean(value.trim())
+          );
+          return file.name === fileName || accountId?.trim() === identity.chatgptAccountId;
+        });
+        if (duplicate) throw new Error(t('auth_files.codex_pat_duplicate'));
+
+        const authJson = buildCodexPatAuthJson(rawToken, identity);
+        await savePastedAuthJson('cpa', fileName, JSON.stringify(authJson));
+        if (oauthEditorConnectionFingerprintRef.current === importConnectionFingerprint) {
+          setCodexPatImportOpen(false);
+        }
+      } finally {
+        codexPatImportingRef.current = false;
+        setCodexPatImporting(false);
+      }
+    },
+    [authFilesRequestScope, connectionFingerprint, files, savePastedAuthJson, t]
   );
 
   const credentialFileNameCounts = useMemo(
@@ -7704,6 +7759,16 @@ export function AccountsPage() {
       <Button
         variant="secondary"
         size="sm"
+        onClick={() => setCodexPatImportOpen(true)}
+        disabled={disableControls || codexPatImporting || authJsonPasteSaving}
+        loading={codexPatImporting}
+      >
+        {!codexPatImporting ? <IconKey size={15} /> : null}
+        {t('auth_files.codex_pat_button')}
+      </Button>
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={() => setAuthJsonPasteOpen(true)}
         disabled={disableControls || authJsonPasteSaving}
         loading={authJsonPasteSaving}
@@ -7760,6 +7825,16 @@ export function AccountsPage() {
           if (!authJsonPasteSaving) setAuthJsonPasteOpen(false);
         }}
         onSave={handleSavePastedAuthJson}
+      />
+      <CodexPatImportModal
+        key={connectionFingerprint}
+        open={codexPatImportOpen}
+        saving={codexPatImporting || authJsonPasteSaving}
+        disabled={disableControls}
+        onClose={() => {
+          if (!codexPatImporting && !authJsonPasteSaving) setCodexPatImportOpen(false);
+        }}
+        onImport={handleImportCodexPat}
       />
       <OAuthExcludedEditorModal
         open={oauthExcludedEditorProvider !== null}
