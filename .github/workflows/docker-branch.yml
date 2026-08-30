@@ -3,7 +3,7 @@ name: Build and Push Branch Image
 on:
   push:
     branches:
-      - codex/codex-pat-account-import
+      - patch-source
   workflow_dispatch:
 
 env:
