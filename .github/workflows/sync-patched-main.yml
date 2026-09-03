@@ -44,17 +44,13 @@ jobs:
           git rm .github/workflows/docker-branch.yml
           git show origin/patch-source:.github/workflows/sync-patched-main.yml \
             > .github/workflows/sync-patched-main.yml
-          git show origin/patch-source:.github/workflows/patched-release.yml \
-            > .github/workflows/patched-release.yml
-          sed -i "/^[[:space:]]*- 'v\*'[[:space:]]*$/a\      - '!v*-patched.*'" \
-            .github/workflows/release.yml
-          grep -qF -- "- '!v*-patched.*'" .github/workflows/release.yml
-          git add .github/workflows
+          git add .github/workflows/sync-patched-main.yml
           git commit -m 'ci: sync patched main from upstream'
 
           version_tag="$(git ls-remote --tags --refs upstream 'v[0-9]*' | awk -F/ '{print $3}' | sort -V | tail -1)"
           test -n "${version_tag}"
           echo "old_main=${old_main}" >> "$GITHUB_OUTPUT"
+          echo "patched_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "short_sha=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
           echo "version_tag=${version_tag}" >> "$GITHUB_OUTPUT"
           if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && \
@@ -116,9 +112,37 @@ jobs:
         if: steps.patch.outputs.changed == 'true'
         run: git push --force-with-lease=refs/heads/main:${{ steps.patch.outputs.old_main }} origin HEAD:main
 
-      - name: Publish patched release tag
+      - name: Publish patched release
         if: steps.patch.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ steps.patch.outputs.version_tag }}-patched.${{ steps.patch.outputs.short_sha }}"
-          git tag "${tag}"
-          git push origin "refs/tags/${tag}"
+          cp apps/web/dist/index.html management.html
+          notes="docs/release-notes/${{ steps.patch.outputs.version_tag }}-zh.md"
+          test -s "${notes}"
+          cp "${notes}" patched-release-notes.md
+          cat >> patched-release-notes.md <<EOF
+
+          ## Fork additions
+
+          - Added Codex personal access token import to the accounts panel.
+          - Rebuilt from the latest upstream main branch by the patched-main workflow.
+
+          ## Verification
+
+          - PAT import tests passed.
+          - Production panel build passed.
+          - Multi-architecture image published: ${GHCR_IMAGE}:main-${{ steps.patch.outputs.short_sha }}.
+          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          ## Source
+
+          - Patched commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${{ steps.patch.outputs.patched_sha }}
+          EOF
+          gh release create "${tag}" management.html \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${{ steps.patch.outputs.patched_sha }}" \
+            --title "CPA Manager Plus ${tag}" \
+            --notes-file patched-release-notes.md \
+            --latest
