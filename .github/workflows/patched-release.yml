@@ -1,0 +1,41 @@
+name: Publish Patched Release
+
+on:
+  push:
+    tags:
+      - 'patched-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish patched panel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Build panel
+        run: |
+          npm ci
+          npm run build
+          cp apps/web/dist/index.html management.html
+        env:
+          VERSION: ${{ github.ref_name }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          name: CPA Manager Plus ${{ github.ref_name }}
+          files: management.html
+          generate_release_notes: true
+          make_latest: true
+          fail_on_unmatched_files: true
