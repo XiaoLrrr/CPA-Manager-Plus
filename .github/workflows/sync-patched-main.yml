@@ -44,11 +44,17 @@ jobs:
             > .github/workflows/sync-patched-main.yml
           git show origin/patch-source:.github/workflows/patched-release.yml \
             > .github/workflows/patched-release.yml
+          sed -i "/^[[:space:]]*- 'v\*'[[:space:]]*$/a\      - '!v*-patched.*'" \
+            .github/workflows/release.yml
+          grep -qF -- "- '!v*-patched.*'" .github/workflows/release.yml
           git add .github/workflows
           git commit -m 'ci: sync patched main from upstream'
 
+          version_tag="$(git ls-remote --tags --refs upstream 'v[0-9]*' | awk -F/ '{print $3}' | sort -V | tail -1)"
+          test -n "${version_tag}"
           echo "old_main=${old_main}" >> "$GITHUB_OUTPUT"
           echo "short_sha=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version_tag=${version_tag}" >> "$GITHUB_OUTPUT"
           if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && \
              [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse origin/main^{tree})" ]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
@@ -107,3 +113,10 @@ jobs:
       - name: Publish fork main
         if: steps.patch.outputs.changed == 'true'
         run: git push --force-with-lease=refs/heads/main:${{ steps.patch.outputs.old_main }} origin HEAD:main
+
+      - name: Publish patched release tag
+        if: steps.patch.outputs.changed == 'true'
+        run: |
+          tag="${{ steps.patch.outputs.version_tag }}-patched.${{ steps.patch.outputs.short_sha }}"
+          git tag "${tag}"
+          git push origin "refs/tags/${tag}"
