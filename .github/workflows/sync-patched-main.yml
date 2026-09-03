@@ -1,9 +1,6 @@
 name: Sync patched main
 
 on:
-  push:
-    branches:
-      - patch-source
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
