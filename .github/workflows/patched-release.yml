@@ -16,6 +16,15 @@ jobs:
     steps:
       - name: Checkout release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify patched main source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -28,6 +37,32 @@ jobs:
           npm ci
           npm run build
           cp apps/web/dist/index.html management.html
+
+          upstream_tag="${GITHUB_REF_NAME#patched-}"
+          notes="docs/release-notes/${upstream_tag}-zh.md"
+          test -s "${notes}"
+          cp "${notes}" patched-release-notes.md
+          cat >> patched-release-notes.md <<EOF
+
+          ## Fork additions
+
+          - Added Codex personal access token import to the accounts panel.
+          - Rebuilt from the latest upstream main branch by the patched-main workflow.
+
+          ## Verification
+
+          - PAT import tests passed.
+          - Production panel build passed.
+          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          ## Artifact
+
+          - management.html: standalone CPA Manager Plus panel.
+
+          ## Source
+
+          - Patched commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
+          EOF
         env:
           VERSION: ${{ github.ref_name }}
 
@@ -36,6 +71,8 @@ jobs:
         with:
           name: CPA Manager Plus ${{ github.ref_name }}
           files: management.html
-          generate_release_notes: true
+          body_path: patched-release-notes.md
+          target_commitish: ${{ github.sha }}
           make_latest: true
+          overwrite_files: true
           fail_on_unmatched_files: true
