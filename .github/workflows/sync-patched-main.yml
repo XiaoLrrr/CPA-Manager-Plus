@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+    inputs:
+      publish_artifacts:
+        description: Build images and publish a patched release
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -24,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 64
 
       - name: Rebuild patched main
         id: patch
@@ -35,7 +41,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git remote add upstream https://github.com/seakee/CPA-Manager-Plus.git
           git fetch --no-tags --depth=1 upstream +refs/heads/main:refs/remotes/upstream/main
-          git fetch --no-tags origin +refs/heads/patch-source:refs/remotes/origin/patch-source
+          git fetch --no-tags --depth=64 origin +refs/heads/patch-source:refs/remotes/origin/patch-source
           git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
           old_main="$(git rev-parse origin/main)"
 
@@ -44,47 +50,73 @@ jobs:
           git rm .github/workflows/docker-branch.yml
           git show origin/patch-source:.github/workflows/sync-patched-main.yml \
             > .github/workflows/sync-patched-main.yml
-          git add .github/workflows/sync-patched-main.yml
+          git show origin/patch-source:AGENTS.md > AGENTS.md
+          git add .github/workflows/sync-patched-main.yml AGENTS.md
           git commit -m 'ci: sync patched main from upstream'
 
-          version_tag="$(git ls-remote --tags --refs upstream 'v[0-9]*' | awk -F/ '{print $3}' | sort -V | tail -1)"
-          test -n "${version_tag}"
           echo "old_main=${old_main}" >> "$GITHUB_OUTPUT"
-          echo "patched_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
-          echo "version_tag=${version_tag}" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && \
-             [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse origin/main^{tree})" ]; then
+          if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse "$old_main^{tree}")" ]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'runtime_changed=false' >> "$GITHUB_OUTPUT"
+            echo 'release_needed=false' >> "$GITHUB_OUTPUT"
+            echo "patched_sha=${old_main}" >> "$GITHUB_OUTPUT"
+            echo "short_sha=$(git rev-parse --short=8 "$old_main")" >> "$GITHUB_OUTPUT"
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo "patched_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "short_sha=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+            if git diff --quiet "$old_main" HEAD -- . \
+              ':(exclude).github/**' ':(exclude)tests/**' \
+              ':(exclude)docs/**' ':(exclude)**/*.md'; then
+              echo 'runtime_changed=false' >> "$GITHUB_OUTPUT"
+              echo 'release_needed=false' >> "$GITHUB_OUTPUT"
+            else
+              echo 'runtime_changed=true' >> "$GITHUB_OUTPUT"
+              if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+                version_tag="$(git ls-remote --tags --refs upstream 'v[0-9]*' | awk -F/ '{print $3}' | sort -V | tail -1)"
+                test -n "${version_tag}"
+                if git ls-remote --exit-code --tags origin "refs/tags/${version_tag}-patched.*" >/dev/null; then
+                  echo 'release_needed=false' >> "$GITHUB_OUTPUT"
+                else
+                  echo 'release_needed=true' >> "$GITHUB_OUTPUT"
+                fi
+              else
+                echo 'release_needed=false' >> "$GITHUB_OUTPUT"
+              fi
+            fi
           fi
 
       - name: Setup Node.js
-        if: steps.patch.outputs.changed == 'true'
+        if: steps.patch.outputs.runtime_changed == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: npm
 
       - name: Install dependencies
-        if: steps.patch.outputs.changed == 'true'
+        if: steps.patch.outputs.runtime_changed == 'true'
         run: npm ci
 
       - name: Test PAT import patch
-        if: steps.patch.outputs.changed == 'true'
+        if: steps.patch.outputs.runtime_changed == 'true'
         run: npm --workspace apps/web exec vitest run src/features/authFiles/codexPat.test.ts
 
       - name: Build production panel
-        if: steps.patch.outputs.changed == 'true'
+        if: steps.patch.outputs.runtime_changed == 'true'
         run: npm run build
 
       - name: Setup Docker Buildx
-        if: steps.patch.outputs.changed == 'true'
+        if: >-
+          steps.patch.outputs.runtime_changed == 'true' &&
+          ((github.event_name == 'schedule' && steps.patch.outputs.release_needed == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.publish_artifacts))
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.patch.outputs.changed == 'true'
+        if: >-
+          steps.patch.outputs.runtime_changed == 'true' &&
+          ((github.event_name == 'schedule' && steps.patch.outputs.release_needed == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.publish_artifacts))
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -92,7 +124,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push main image
-        if: steps.patch.outputs.changed == 'true'
+        if: >-
+          steps.patch.outputs.runtime_changed == 'true' &&
+          ((github.event_name == 'schedule' && steps.patch.outputs.release_needed == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.publish_artifacts))
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -113,13 +148,18 @@ jobs:
         run: git push --force-with-lease=refs/heads/main:${{ steps.patch.outputs.old_main }} origin HEAD:main
 
       - name: Publish patched release
-        if: steps.patch.outputs.changed == 'true'
+        if: >-
+          steps.patch.outputs.runtime_changed == 'true' &&
+          ((github.event_name == 'schedule' && steps.patch.outputs.release_needed == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.publish_artifacts))
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${{ steps.patch.outputs.version_tag }}-patched.${{ steps.patch.outputs.short_sha }}"
+          version_tag="$(git ls-remote --tags --refs upstream 'v[0-9]*' | awk -F/ '{print $3}' | sort -V | tail -1)"
+          test -n "${version_tag}"
+          tag="${version_tag}-patched.${{ steps.patch.outputs.short_sha }}"
           cp apps/web/dist/index.html management.html
-          notes="docs/release-notes/${{ steps.patch.outputs.version_tag }}-zh.md"
+          notes="docs/release-notes/${version_tag}-zh.md"
           test -s "${notes}"
           cp "${notes}" patched-release-notes.md
           cat >> patched-release-notes.md <<EOF
