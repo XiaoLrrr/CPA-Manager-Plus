@@ -108,6 +108,10 @@ components -> entities / services / stores / hooks / utils
 
 ## Verification
 
+- Test observable behavior and real regressions only. A bug fix normally needs one focused test; add a second only for a distinct boundary.
+- Do not add source-text tests, change detectors, fixed-count snapshots, duplicate test matrices, unreachable-state tests, or speculative “defense in depth” cases.
+- Do not duplicate coverage already enforced by types, schemas, builds, or lower-level tests. Keep required validation at trust, migration, and security boundaries.
+
 | Change | Verify |
 |---|---|
 | frontend behavior | `npm run type-check`, `npm run lint`, `npm run test` |
